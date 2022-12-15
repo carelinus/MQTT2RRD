@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2014 David Irvine
 #
 # This file is part of MQTT2RRD
@@ -16,13 +16,14 @@
 # You should have received a copy of the GNU General Public License
 # along with MQTT2RRD.  If not, see "http://www.gnu.org/licenses/".
 #
-import sys, os, argparse, atexit, time, logging, ConfigParser, grp, pwd, getpass, json
+import sys, os, argparse, atexit, time, logging, configparser, grp, pwd, getpass, json
 from signal import SIGTERM
-import mosquitto, rrdtool
+import rrdtool
+import paho.mqtt as paho
 
-logger=logging.getLogger("MQTT2RRD")
+logger = logging.getLogger("MQTT2RRD")
 
-config = ConfigParser.RawConfigParser()
+config = configparser.RawConfigParser()
 
 
 def get_config_item(section, name, default):
@@ -60,19 +61,26 @@ def extract_float(pl):
 ####
 def start(args, daemon):
     """
-        Starts logging, either as a daemon or in the foreground.
+    Starts logging, either as a daemon or in the foreground.
     """
     # Check the data directory exists
-    data_dir = get_config_item("daemon", "data_dir", "/var/lib/mqtt2rrd", )
+    data_dir = get_config_item(
+        "daemon",
+        "data_dir",
+        "/var/lib/mqtt2rrd",
+    )
     if not os.path.isdir(data_dir):
         logger.critical(
-            "%s: Error: data directory %s does not exist or is not a directory\n" % (sys.argv[0], data_dir))
+            "%s: Error: data directory %s does not exist or is not a directory\n"
+            % (sys.argv[0], data_dir)
+        )
         sys.exit(1)
 
     if args.no_daemon:
         run(args)
     else:
         daemon.start(args)
+
 
 def stop(args, daemon):
     daemon.stop()
@@ -88,10 +96,12 @@ def run(args):
     Is called by either the daemon.start() method, or the start function
     if the no-daemon option is specified.
     """
-    while(True):
+    while True:
         try:
             logger.debug("Entering Loop")
-            client = mosquitto.Mosquitto(get_config_item("mqtt", "client_id", "MQTT2RRD Client"))
+            client = paho.Client(
+                get_config_item("mqtt", "client_id", "MQTT2RRD Client")
+            )
             client.on_message = on_message
             client.on_connect = on_connect
 
@@ -100,17 +110,29 @@ def run(args):
                     get_config_item("mqtt", "username", ""),
                     get_config_item("mqtt", "password", ""),
                 )
-            logger.debug("Attempting to connect to server: %s:%s" % (get_config_item("mqtt", "hostname", "localhost"), get_config_item("mqtt", "port", 1833),))
+            logger.debug(
+                "Attempting to connect to server: %s:%s"
+                % (
+                    get_config_item("mqtt", "hostname", "localhost"),
+                    get_config_item("mqtt", "port", 1833),
+                )
+            )
             client.connect(
                 get_config_item("mqtt", "hostname", "localhost"),
                 port=int(get_config_item("mqtt", "port", 1883)),
                 keepalive=int(get_config_item("mqtt", "keepalive", 60)),
             )
-            logger.info("Connected: %s:%s" % (get_config_item("mqtt", "hostname", "localhost"), get_config_item("mqtt", "port", 1833),))
+            logger.info(
+                "Connected: %s:%s"
+                % (
+                    get_config_item("mqtt", "hostname", "localhost"),
+                    get_config_item("mqtt", "port", 1833),
+                )
+            )
             client.loop_forever()
         except Exception as e:
             logging.critical("FAIL: %s" % str(e))
-            time.sleep(30) # 30 second wait
+            time.sleep(30)  # 30 second wait
 
 
 ####
@@ -127,21 +149,28 @@ def on_connect(client, userdata, rc):
 
 
 def on_message(mosq, obj, msg):
-    logger.debug("Message received on topic: %s with payload: %s." % (msg.topic, msg.payload))
+    logger.debug(
+        "Message received on topic: %s with payload: %s." % (msg.topic, msg.payload)
+    )
 
     pl = extract_float(msg.payload)
     if pl == None:
         logger.debug("Unable to get float from payload: %s" % msg.payload)
         return
 
-    logger.info("Message received on topic " + msg.topic + " with QoS " + str(
-        msg.qos) + " and payload %d " % pl)
+    logger.info(
+        "Message received on topic "
+        + msg.topic
+        + " with QoS "
+        + str(msg.qos)
+        + " and payload %d " % pl
+    )
     components = msg.topic.split("/")
     file_name = components.pop()
     info_file_name = "%s.info" % file_name
     file_name = "%s.rrd" % file_name
-    dir_name = get_config_item("daemon","data_dir","/var/lib/mqtt2rrd/")
-    while (len(components) > 0):
+    dir_name = get_config_item("daemon", "data_dir", "/var/lib/mqtt2rrd/")
+    while len(components) > 0:
         dir_name = os.path.join(dir_name, components.pop(0))
         if not os.path.isdir(dir_name):
             os.mkdir(dir_name)
@@ -158,33 +187,35 @@ def on_message(mosq, obj, msg):
 
     if not os.path.exists(file_path):
         # Create the info file
-        info={
-            'topic':msg.topic,
-            'created':time.time(),
-            'friendly_name': get_config_item(msg.topic, "friendly_name", msg.topic)
+        info = {
+            "topic": msg.topic,
+            "created": time.time(),
+            "friendly_name": get_config_item(msg.topic, "friendly_name", msg.topic),
         }
         info_fpath = os.path.join(dir_name, info_file_name)
-        f=open(info_fpath, "w")
+        f = open(info_fpath, "w")
         json.dump(info, f)
         f.close()
         # Create the RRD file
         try:
-            step=get_config_item(msg.topic, "step", 60)
+            step = get_config_item(msg.topic, "step", 60)
             RRAstr = get_config_item(
                 msg.topic,
                 "archives",
-                "RRA:AVERAGE:0.5:2:30,RRA:AVERAGE:0.5:5:288,RRA:AVERAGE:0.5:30:336,RRA:AVERAGE:0.5:60:1488,RRA:AVERAGE:0.5:720:744,RRA:AVERAGE:0.5:1440:265"
+                "RRA:AVERAGE:0.5:2:30,RRA:AVERAGE:0.5:5:288,RRA:AVERAGE:0.5:30:336,RRA:AVERAGE:0.5:60:1488,RRA:AVERAGE:0.5:720:744,RRA:AVERAGE:0.5:1440:265",
             )
 
-            RRAs=[]
+            RRAs = []
             for i in RRAstr.split(","):
-                i=i.lstrip(" ")
-                i=i.rstrip(" ")
-                i=str(i)
+                i = i.lstrip(" ")
+                i = i.rstrip(" ")
+                i = str(i)
                 RRAs.append(i)
 
             logger.info("Creating RRD file: %s for topic: %s" % (file_path, msg.topic))
-            rrdtool.create(str(file_path), "--step", str(step), "--start", "0", ds, *RRAs)
+            rrdtool.create(
+                str(file_path), "--step", str(step), "--start", "0", ds, *RRAs
+            )
 
         except rrdtool.error as e:
             logger.error("Could not create RRD for topic: %s: %s" % (ds, str(e)))
@@ -192,7 +223,10 @@ def on_message(mosq, obj, msg):
         logger.info("Updating: %s with value: %s" % (file_path, pl))
         rrdtool.update(str(file_path), str("N:%f" % pl))
     except rrdtool.error as e:
-        logger.error("Could not log value: %s to RRD %s for topic: %s: %s" % (pl, file_path, msg.topic, str(e)))
+        logger.error(
+            "Could not log value: %s to RRD %s for topic: %s: %s"
+            % (pl, file_path, msg.topic, str(e))
+        )
 
 
 ######
@@ -211,7 +245,9 @@ class Daemon:
 
     """
 
-    def __init__(self, pidfile, stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
+    def __init__(
+        self, pidfile, stdin="/dev/null", stdout="/dev/null", stderr="/dev/null"
+    ):
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
@@ -228,7 +264,7 @@ class Daemon:
             if pid > 0:
                 # exit first parent
                 sys.exit(0)
-        except OSError, e:
+        except OSError as e:
             sys.stderr.write("fork #1 failed: %d (%s)\n" % (e.errno, e.strerror))
             sys.exit(1)
 
@@ -243,16 +279,16 @@ class Daemon:
             if pid > 0:
                 # exit from second parent
                 sys.exit(0)
-        except OSError, e:
+        except OSError as e:
             sys.stderr.write("fork #2 failed: %d (%s)\n" % (e.errno, e.strerror))
             sys.exit(1)
 
         # redirect standard file descriptors
         sys.stdout.flush()
         sys.stderr.flush()
-        si = file(self.stdin, 'r')
-        so = file(self.stdout, 'a+')
-        se = file(self.stderr, 'a+', 0)
+        si = file(self.stdin, "r")
+        so = file(self.stdout, "a+")
+        se = file(self.stderr, "a+", 0)
         os.dup2(si.fileno(), sys.stdin.fileno())
         os.dup2(so.fileno(), sys.stdout.fileno())
         os.dup2(se.fileno(), sys.stderr.fileno())
@@ -260,7 +296,7 @@ class Daemon:
         # write pidfile
         atexit.register(self.delpid)
         pid = str(os.getpid())
-        file(self.pidfile, 'w+').write("%s\n" % pid)
+        file(self.pidfile, "w+").write("%s\n" % pid)
 
     def delpid(self):
         os.remove(self.pidfile)
@@ -271,7 +307,7 @@ class Daemon:
         """
         # Check for a pidfile to see if the daemon already runs
         try:
-            pf = file(self.pidfile, 'r')
+            pf = file(self.pidfile, "r")
             pid = int(pf.read().strip())
             pf.close()
         except IOError:
@@ -293,7 +329,7 @@ class Daemon:
         """
         # Get the pid from the pidfile
         try:
-            pf = file(self.pidfile, 'r')
+            pf = file(self.pidfile, "r")
             pid = int(pf.read().strip())
             pf.close()
         except IOError:
@@ -309,7 +345,7 @@ class Daemon:
             while 1:
                 os.kill(pid, SIGTERM)
                 time.sleep(0.1)
-        except OSError, err:
+        except OSError as err:
             err = str(err)
             if err.find("No such process") > 0:
                 if os.path.exists(self.pidfile):
@@ -337,36 +373,52 @@ class MQTTDaemon(Daemon):
 
 
 parser = argparse.ArgumentParser()
-parser_subparsers = parser.add_subparsers(title='subcommands', description='Valid Commands',
-                                   help='The following commands are available')
+parser_subparsers = parser.add_subparsers(
+    title="subcommands",
+    description="Valid Commands",
+    help="The following commands are available",
+)
 
 
-stop_parser = parser_subparsers.add_parser('stop')
+stop_parser = parser_subparsers.add_parser("stop")
 stop_parser.set_defaults(func=stop)
-stop_parser.add_argument("--config_file", help="The location of the config file", type=str, default="")
+stop_parser.add_argument(
+    "--config_file", help="The location of the config file", type=str, default=""
+)
 
-restart_parser = parser_subparsers.add_parser('restart')
-restart_parser.add_argument("--config_file", help="The location of the config file", type=str, default="")
+restart_parser = parser_subparsers.add_parser("restart")
+restart_parser.add_argument(
+    "--config_file", help="The location of the config file", type=str, default=""
+)
 restart_parser.set_defaults(func=restart)
 
-start_parser = parser_subparsers.add_parser('start')
+start_parser = parser_subparsers.add_parser("start")
 start_parser.set_defaults(func=start)
-start_parser.add_argument("--config_file", help="The location of the config file", type=str, default="")
-start_parser.add_argument("--no_daemon", help="Do not spawn a daemon, stay in the foreground",
-                          action="store_true", default=False)
+start_parser.add_argument(
+    "--config_file", help="The location of the config file", type=str, default=""
+)
+start_parser.add_argument(
+    "--no_daemon",
+    help="Do not spawn a daemon, stay in the foreground",
+    action="store_true",
+    default=False,
+)
 
 args = parser.parse_args()
 
 # Load configuration information
+if not hasattr(args, "config_file"):
+    print("no config file, exiting")
+    sys.exit(1)
 if len(args.config_file) > 0:
     config.read(args.config_file)
 else:
-    config.read(['/etc/mqtt2rrd.conf', os.path.expanduser('~/.mqtt2rrd.conf')])
+    config.read(["/etc/mqtt2rrd.conf", os.path.expanduser("~/.mqtt2rrd.conf")])
 
-formatter = logging.Formatter('%(asctime)s: %(levelname)s: %(message)s')
+formatter = logging.Formatter("%(asctime)s: %(levelname)s: %(message)s")
 
 logger.setLevel(int(get_config_item("logging", "log_level", "10")))
-lf=get_config_item("logging", "log_file", None)
+lf = get_config_item("logging", "log_file", None)
 if lf:
     fh = logging.FileHandler(lf)
     fh.setLevel(int(get_config_item("logging", "log_level", "10")))
@@ -376,7 +428,6 @@ ch = logging.StreamHandler()
 ch.setLevel(int(get_config_item("logging", "log_level", "10")))
 ch.setFormatter(formatter)
 logger.addHandler(ch)
-
 
 
 # Change to correct user if running as root.
@@ -393,6 +444,6 @@ if user and group and os.getuid() == 0:
 
 logger.info("Running as: %s" % getpass.getuser())
 
-daemon = MQTTDaemon(get_config_item("daemon","pid_file","/var/run/mqtt2rrd.pid"))
+daemon = MQTTDaemon(get_config_item("daemon", "pid_file", "/var/run/mqtt2rrd.pid"))
 logger.debug("Setup Daemon")
 args.func(args, daemon)
